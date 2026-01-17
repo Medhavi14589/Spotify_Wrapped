@@ -6,7 +6,7 @@ All data and recommendations come from Flask API
 import streamlit as st
 import requests
 import pandas as pd
-from config import API_BASE_URL, APP_TITLE, APP_ICON, PAGE_LAYOUT
+from frontend_config import API_BASE_URL, APP_TITLE, APP_ICON, PAGE_LAYOUT
 
 # Page configuration
 st.set_page_config(

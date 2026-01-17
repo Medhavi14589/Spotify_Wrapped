@@ -19,8 +19,8 @@ print("SPOTIFY RECOMMENDER MODEL TRAINING")
 print("="*70)
 
 # Configuration
-DATA_PATH = "spotify_tracks_final.csv"  # Output from offline_pipeline.py
-ML_DIR = "../ml/"  # Save models here
+DATA_PATH = r"D:\codes\Datasets\spotify_data.csv"  # Output from offline_pipeline.py
+ML_DIR = r"D:\codes\Spotify_Wrapped\ml" # Save models here
 
 # Create ml directory if it doesn't exist
 os.makedirs(ML_DIR, exist_ok=True)
