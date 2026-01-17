@@ -1,8 +1,3 @@
-"""
-Spotify Wrapped - Streamlit Frontend
-All data and recommendations come from Flask API
-"""
-
 import streamlit as st
 import requests
 import pandas as pd
@@ -294,6 +289,12 @@ else:
     st.info("📤 Upload your Spotify CSV above to see your personalized mood analysis!")
     st.divider()
 
+        for i, rec in enumerate(recs, start=1):
+            st.markdown(
+                f"**{i}. {rec['track_name']}**  \n"
+                f"*{rec['artists']}* — {rec['track_genre']}"
+            )
+
 # ============================================================================
 # SECTION 3: MUSIC RECOMMENDATIONS (Pre-trained Model)
 # ============================================================================
@@ -366,3 +367,4 @@ st.markdown("""
     <p>Made with ❤️ for music lovers</p>
 </div>
 """, unsafe_allow_html=True)
+
