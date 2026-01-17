@@ -1,6 +1,7 @@
 """
-Spotify Wrapped Analysis API - FULLY DYNAMIC VERSION
+Spotify Wrapped Analysis API - FULLY DYNAMIC VERSION WITH PRE-TRAINED RECOMMENDER
 NO HARDCODED VALUES - All data comes from user uploads and requests
+Recommendations use pre-trained model for fast responses
 """
 
 from flask import Flask, request, jsonify, send_file
@@ -16,6 +17,13 @@ import io
 import base64
 from werkzeug.utils import secure_filename
 import os
+import sys
+
+# Add parent directory to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import the recommender class
+from ml.recommender import SpotifyMusicRecommender
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -29,12 +37,34 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Global DataFrame - stores currently loaded data
-df = None
+# Global variables
+df = None  # User's uploaded playlist data
+recommender = None  # Pre-trained recommender model
 
 # Set plotting style
 plt.style.use("default")
 sns.set_context("notebook")
+
+# ============================================================================
+# LOAD PRE-TRAINED RECOMMENDER AT STARTUP
+# ============================================================================
+
+print("\n" + "="*70)
+print("🎵 LOADING PRE-TRAINED RECOMMENDER MODEL...")
+print("="*70)
+
+try:
+    # Load the pre-trained model from ml/ directory
+    model_dir = os.path.join(os.path.dirname(__file__), '..', 'ml')
+    recommender = SpotifyMusicRecommender.load_model(model_dir)
+    print("✅ Recommender loaded successfully!")
+    print(f"   Available tracks: {len(recommender.df)}")
+except Exception as e:
+    print(f"⚠️  WARNING: Could not load recommender model: {str(e)}")
+    print("   Recommendation endpoints will not work.")
+    print("   Please run 'python backend/train_recommender.py' first.")
+
+print("="*70 + "\n")
 
 
 # ============================================================================
@@ -162,32 +192,153 @@ def classify_popularity(popularity):
 
 
 # ============================================================================
-# API ENDPOINTS - ALL DYNAMIC
+# API ENDPOINTS - RECOMMENDATIONS (PRE-TRAINED MODEL)
+# ============================================================================
+
+@app.route('/get-track-names', methods=['GET'])
+def get_track_names():
+    """Get list of all available track names from pre-trained dataset"""
+    global recommender
+    
+    if recommender is None:
+        return jsonify({'error': 'Recommender model not loaded'}), 500
+    
+    try:
+        track_names = recommender.get_track_names()
+        return jsonify({
+            'track_names': track_names,
+            'total_tracks': len(track_names),
+            'source': 'Pre-trained recommendation dataset'
+        })
+    except Exception as e:
+        return jsonify({'error': f'Failed to get track names: {str(e)}'}), 500
+
+
+@app.route('/recommend-similar-tracks', methods=['POST'])
+def recommend_similar_tracks():
+    """Get recommendations based on a selected track using pre-trained model"""
+    global recommender
+    
+    if recommender is None:
+        return jsonify({'error': 'Recommender model not loaded. Please train the model first.'}), 500
+    
+    data = request.get_json()
+    
+    if not data or 'track_name' not in data:
+        return jsonify({'error': 'track_name is required in request body'}), 400
+    
+    track_name = data['track_name']
+    top_k = data.get('top_k', 10)
+    
+    try:
+        # Get recommendations
+        recommendations = recommender.recommend_by_track_name(track_name, n_recommendations=top_k)
+        
+        if recommendations.empty:
+            return jsonify({'error': f'Track "{track_name}" not found in database'}), 404
+        
+        # Format response
+        result = []
+        for _, row in recommendations.iterrows():
+            track_info = {
+                'track_name': row.get('track_name') or row.get('name', 'Unknown'),
+                'artists': row.get('artists') or row.get('artist_name(s)', 'Unknown'),
+                'track_genre': row.get('track_genre') or row.get('genre', 'Unknown'),
+                'similarity_score': round(float(row['similarity_score']), 4) if 'similarity_score' in row else None
+            }
+            
+            # Add optional fields if available
+            if 'popularity' in row:
+                track_info['popularity'] = int(row['popularity'])
+            if 'year' in row:
+                track_info['year'] = int(row['year'])
+            
+            result.append(track_info)
+        
+        return jsonify({
+            'query_track': track_name,
+            'recommendations': result,
+            'count': len(result),
+            'source': 'Pre-trained KNN model'
+        })
+    
+    except Exception as e:
+        return jsonify({'error': f'Recommendation failed: {str(e)}'}), 500
+
+
+@app.route('/get-random-songs', methods=['GET'])
+def get_random_songs():
+    """Get random songs from the pre-trained dataset"""
+    global recommender
+    
+    if recommender is None:
+        return jsonify({'error': 'Recommender model not loaded'}), 500
+    
+    n = request.args.get('n', default=10, type=int)
+    
+    if n <= 0 or n > 100:
+        return jsonify({'error': 'n must be between 1 and 100'}), 400
+    
+    try:
+        random_songs = recommender.get_random_songs(n=n)
+        
+        result = []
+        for _, row in random_songs.iterrows():
+            track_info = {
+                'track_name': row.get('track_name') or row.get('name', 'Unknown'),
+                'artists': row.get('artists') or row.get('artist_name(s)', 'Unknown'),
+                'track_genre': row.get('track_genre') or row.get('genre', 'Unknown')
+            }
+            
+            if 'popularity' in row:
+                track_info['popularity'] = int(row['popularity'])
+            if 'year' in row:
+                track_info['year'] = int(row['year'])
+            
+            result.append(track_info)
+        
+        return jsonify({
+            'random_songs': result,
+            'count': len(result)
+        })
+    
+    except Exception as e:
+        return jsonify({'error': f'Failed to get random songs: {str(e)}'}), 500
+
+
+# ============================================================================
+# API ENDPOINTS - USER DATA ANALYSIS (REQUIRES UPLOAD)
 # ============================================================================
 
 @app.route('/', methods=['GET'])
 def home():
     """API home page"""
     return jsonify({
-        'message': 'Spotify Wrapped Analysis API - Fully Dynamic',
-        'version': '2.0',
-        'note': 'All responses are generated from your uploaded data - no hardcoded values',
+        'message': 'Spotify Wrapped Analysis API - Fully Dynamic with Pre-trained Recommender',
+        'version': '3.0',
+        'note': 'Upload your playlist for personalized analysis. Recommendations use pre-trained model.',
+        'recommender_status': 'loaded' if recommender is not None else 'not loaded',
         'endpoints': {
-            'POST /upload': 'Upload Spotify CSV data',
-            'GET /stats': 'Get statistics from YOUR data',
-            'GET /top-artists': 'Get YOUR top artists',
-            'GET /top-tracks': 'Get YOUR top tracks',
-            'GET /genre-analysis': 'Analyze YOUR genres',
-            'GET /audio-features': 'Get YOUR average audio features',
-            'GET /listening-age': 'Calculate YOUR listening age',
-            'GET /playlist-age': 'Calculate YOUR playlist age',
-            'POST /predict-mood': 'Predict mood (requires all features)',
-            'GET /popularity-distribution': 'YOUR popularity distribution',
-            'GET /explicit-analysis': 'Analyze YOUR explicit content',
-            'GET /temporal-analysis': 'YOUR listening trends',
-            'GET /mood-distribution': 'YOUR mood distribution',
-            'POST /export-insights': 'Export YOUR full analysis',
-            'GET /health': 'Health check'
+            'RECOMMENDATIONS (Pre-trained - No upload needed)': {
+                'GET /get-track-names': 'Get all available track names',
+                'POST /recommend-similar-tracks': 'Get similar track recommendations',
+                'GET /get-random-songs': 'Get random songs'
+            },
+            'USER ANALYSIS (Requires CSV upload)': {
+                'POST /upload': 'Upload your Spotify CSV data',
+                'GET /stats': 'Get YOUR statistics',
+                'GET /top-artists': 'Get YOUR top artists',
+                'GET /top-tracks': 'Get YOUR top tracks',
+                'GET /mood-distribution': 'YOUR mood distribution',
+                'GET /listening-age': 'YOUR listening age',
+                'GET /playlist-age': 'YOUR playlist age',
+                'GET /popularity-distribution': 'YOUR popularity distribution',
+                'GET /explicit-analysis': 'YOUR explicit content analysis',
+                'GET /temporal-analysis': 'YOUR listening trends'
+            },
+            'UTILITY': {
+                'GET /health': 'Health check'
+            }
         }
     })
 
@@ -396,44 +547,31 @@ def get_top_tracks():
     })
 
 
-@app.route('/audio-features', methods=['GET'])
-def audio_features():
-    """Get YOUR average audio features from YOUR data"""
+@app.route('/mood-distribution', methods=['GET'])
+def mood_distribution():
+    """Get YOUR mood distribution from YOUR data"""
     global df
     
     if df is None:
-        return jsonify({'error': 'No data loaded'}), 400
+        return jsonify({'error': 'No data loaded. Upload a file first using POST /upload'}), 400
     
-    # Define possible audio features
-    feature_cols = ['Danceability', 'Energy', 'Loudness', 'Speechiness', 
-                    'Acousticness', 'Instrumentalness', 'Liveness', 'Valence', 'Tempo']
-    
-    # Only use features that exist in YOUR data
-    available_features = [col for col in feature_cols if col in df.columns]
-    
-    if not available_features:
+    if 'Mood' not in df.columns:
         return jsonify({
-            'error': 'No audio features found in your data',
-            'expected_columns': feature_cols
+            'error': 'Mood data not available. Upload a file with audio features (Danceability, Energy, Valence, etc.)'
         }), 400
     
-    # Calculate statistics from YOUR data
-    stats = {}
-    for feature in available_features:
-        feature_data = df[feature].dropna()
-        if len(feature_data) > 0:
-            stats[feature] = {
-                'mean': round(float(feature_data.mean()), 4),
-                'median': round(float(feature_data.median()), 4),
-                'min': round(float(feature_data.min()), 4),
-                'max': round(float(feature_data.max()), 4),
-                'std': round(float(feature_data.std()), 4)
-            }
+    mood_counts = df['Mood'].value_counts().to_dict()
     
     return jsonify({
-        'audio_features': stats,
-        'tracks_analyzed': len(df),
-        'note': 'All values calculated from your uploaded data'
+        'mood_distribution': {
+            mood: {
+                'count': int(count),
+                'percentage': round((count / len(df)) * 100, 2)
+            }
+            for mood, count in mood_counts.items()
+        },
+        'total_tracks': len(df),
+        'note': 'Moods predicted from audio features in your data'
     })
 
 
@@ -481,45 +619,6 @@ def playlist_age():
         'latest_song_added': str(df['Added At'].max()),
         'interpretation': f'You started this playlist {age} years ago',
         'note': 'Calculated from timestamps in your data'
-    })
-
-
-@app.route('/predict-mood', methods=['POST'])
-def predict_mood_endpoint():
-    """
-    Predict mood - REQUIRES ALL FEATURES (no defaults)
-    
-    Required in request body:
-    - Danceability
-    - Energy
-    - Valence
-    - Acousticness
-    - Tempo
-    """
-    data = request.get_json()
-    
-    if not data:
-        return jsonify({
-            'error': 'No data provided',
-            'required_fields': ['Danceability', 'Energy', 'Valence', 'Acousticness', 'Tempo']
-        }), 400
-    
-    mood, result = predict_mood(data)
-    
-    if mood is None:
-        # result contains error message
-        return jsonify({'error': result}), 400
-    
-    return jsonify({
-        'predicted_mood': mood,
-        'probabilities': result,
-        'input_features': {
-            'Danceability': float(data['Danceability']),
-            'Energy': float(data['Energy']),
-            'Valence': float(data['Valence']),
-            'Acousticness': float(data['Acousticness']),
-            'Tempo': float(data['Tempo'])
-        }
     })
 
 
@@ -635,149 +734,16 @@ def temporal_analysis():
     })
 
 
-@app.route('/mood-distribution', methods=['GET'])
-def mood_distribution():
-    """Get YOUR mood distribution from YOUR data"""
-    global df
-    
-    if df is None:
-        return jsonify({'error': 'No data loaded'}), 400
-    
-    if 'Mood' not in df.columns:
-        return jsonify({
-            'error': 'Mood data not available. Upload a file with audio features (Danceability, Energy, Valence, etc.)'
-        }), 400
-    
-    mood_counts = df['Mood'].value_counts().to_dict()
-    
-    return jsonify({
-        'mood_distribution': {
-            mood: {
-                'count': int(count),
-                'percentage': round((count / len(df)) * 100, 2)
-            }
-            for mood, count in mood_counts.items()
-        },
-        'total_tracks': len(df),
-        'note': 'Moods predicted from audio features in your data'
-    })
-
-
-@app.route('/genre-analysis', methods=['GET'])
-def genre_analysis():
-    """Analyze YOUR genres from YOUR data"""
-    global df
-    
-    if df is None:
-        return jsonify({'error': 'No data loaded'}), 400
-    
-    if 'Genres' not in df.columns:
-        return jsonify({
-            'message': 'Genre information not available in your uploaded file',
-            'note': 'Upload a file with a Genres column to see genre analysis'
-        }), 404
-    
-    # Extract and flatten genres from your data
-    all_genres = []
-    for genres in df['Genres'].dropna():
-        if isinstance(genres, str) and genres != '[]':
-            try:
-                genre_list = eval(genres)
-                if isinstance(genre_list, list):
-                    all_genres.extend(genre_list)
-            except:
-                pass
-    
-    if not all_genres:
-        return jsonify({
-            'message': 'No valid genre data found in your file'
-        }), 404
-    
-    genre_counts = pd.Series(all_genres).value_counts()
-    
-    n = request.args.get('n', default=20, type=int)
-    top_genres = genre_counts.head(n)
-    
-    return jsonify({
-        'top_genres': [
-            {
-                'rank': idx + 1,
-                'genre': genre,
-                'count': int(count),
-                'percentage': round((count / len(all_genres)) * 100, 2)
-            }
-            for idx, (genre, count) in enumerate(top_genres.items())
-        ],
-        'total_unique_genres': len(genre_counts),
-        'total_genre_mentions': len(all_genres)
-    })
-
-
-@app.route('/export-insights', methods=['POST'])
-def export_insights():
-    """Export comprehensive insights from YOUR data"""
-    global df
-    
-    if df is None:
-        return jsonify({'error': 'No data loaded'}), 400
-    
-    insights = {
-        'data_source': 'Your uploaded CSV file',
-        'generated_at': datetime.now().isoformat(),
-        'summary': {}
-    }
-    
-    # Basic summary
-    insights['summary']['total_tracks'] = len(df)
-    
-    if 'Artist Name(s)' in df.columns:
-        insights['summary']['unique_artists'] = int(df['Artist Name(s)'].nunique())
-        top_artists = df['Artist Name(s)'].value_counts().head(10).to_dict()
-        insights['top_artists'] = {artist: int(count) for artist, count in top_artists.items()}
-    
-    if 'Duration (ms)' in df.columns:
-        total_ms = df['Duration (ms)'].sum()
-        insights['summary']['total_duration_hours'] = round(total_ms / (1000 * 60 * 60), 2)
-    
-    if 'Popularity' in df.columns:
-        insights['summary']['average_popularity'] = round(float(df['Popularity'].mean()), 2)
-        top_tracks = df.nlargest(10, 'Popularity')[['Track Name', 'Artist Name(s)', 'Popularity']].to_dict(orient='records')
-        insights['top_tracks'] = top_tracks
-    
-    # Audio features
-    feature_cols = ['Danceability', 'Energy', 'Valence', 'Acousticness']
-    available = [col for col in feature_cols if col in df.columns]
-    if available:
-        insights['audio_features'] = {
-            col: round(float(df[col].mean()), 4) for col in available
-        }
-    
-    # Mood distribution
-    if 'Mood' in df.columns:
-        insights['mood_distribution'] = df['Mood'].value_counts().to_dict()
-    
-    # Ages
-    if 'Release Year' in df.columns:
-        age, _ = calculate_listening_age(df)
-        if age:
-            insights['listening_age'] = age
-    
-    if 'Added At' in df.columns:
-        age, _ = calculate_playlist_age(df)
-        if age:
-            insights['playlist_age_years'] = age
-    
-    return jsonify(insights)
-
-
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check"""
     return jsonify({
         'status': 'healthy',
-        'data_loaded': df is not None,
-        'rows': len(df) if df is not None else 0,
-        'version': '2.0-dynamic'
+        'user_data_loaded': df is not None,
+        'user_data_rows': len(df) if df is not None else 0,
+        'recommender_loaded': recommender is not None,
+        'recommender_tracks': len(recommender.df) if recommender is not None else 0,
+        'version': '3.0-dynamic-with-pretrained'
     })
 
 
@@ -800,11 +766,11 @@ def internal_error(error):
 # ============================================================================
 
 if __name__ == '__main__':
-    print("🎵 Spotify Wrapped Analysis API v2.0 - Fully Dynamic")
-    print("=" * 60)
-    print("✅ NO hardcoded values - all responses from your data")
-    print("✅ Clear error messages when data is missing")
-    print("=" * 60)
+    print("🎵 Spotify Wrapped Analysis API v3.0")
+    print("=" * 70)
+    print("✅ Pre-trained recommender for fast recommendations")
+    print("✅ User upload for personalized analysis")
+    print("=" * 70)
     print("Starting server on http://localhost:5000")
-    print("=" * 60)
+    print("=" * 70)
     app.run(debug=True, host='0.0.0.0', port=5000)
