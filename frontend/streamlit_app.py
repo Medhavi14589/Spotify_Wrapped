@@ -1,6 +1,12 @@
 import streamlit as st
 import requests
 import pandas as pd
+import sys
+from pathlib import Path
+
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 from frontend.frontend_config import API_BASE_URL, APP_TITLE, APP_ICON, PAGE_LAYOUT
 
 # Page configuration
@@ -37,6 +43,13 @@ st.markdown("""
         border-radius: 0.5rem;
         padding: 1rem;
         margin: 1rem 0;
+    }
+    .feature-box {
+        background-color: #282828;
+        border-radius: 15px;
+        padding: 25px;
+        margin: 15px 0;
+        border-left: 5px solid #1DB954;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -94,35 +107,6 @@ def get_stats():
         return False, str(e)
 
 
-def get_track_names():
-    """Get available track names from pre-trained model"""
-    try:
-        response = requests.get(f"{API_BASE_URL}/get-track-names", timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            return True, data['track_names']
-        return False, response.json().get('error', 'Unknown error')
-    except Exception as e:
-        return False, str(e)
-
-
-def get_recommendations(track_name, top_k=5):
-    """Get recommendations from API"""
-    try:
-        payload = {'track_name': track_name, 'top_k': top_k}
-        response = requests.post(
-            f"{API_BASE_URL}/recommend-similar-tracks",
-            json=payload,
-            timeout=15
-        )
-        
-        if response.status_code == 200:
-            return True, response.json()
-        return False, response.json().get('error', 'Unknown error')
-    except Exception as e:
-        return False, str(e)
-
-
 def get_top_artists(n=10):
     """Get top artists from API"""
     try:
@@ -169,7 +153,34 @@ with st.expander("ℹ️ API Status", expanded=False):
 st.divider()
 
 # ============================================================================
-# SECTION 1: FILE UPLOAD (For Personalized Analysis)
+# SECTION 1: RECOMMENDATIONS INFO
+# ============================================================================
+
+st.header("🎯 Personalized Music Recommendations")
+
+st.markdown("""
+<div class='feature-box'>
+    <h3>🎵 How It Works</h3>
+    <ol>
+        <li><strong>Rate 10 Songs:</strong> We'll show you 10 random songs from our vast music database</li>
+        <li><strong>Give Your Opinion:</strong> Rate each song from 1-5 stars based on your preference</li>
+        <li><strong>Get Recommendations:</strong> Our AI analyzes your ratings and finds songs you'll love!</li>
+    </ol>
+    <br>
+    <p style='text-align: center;'>
+        👉 <strong>Go to the "Recommendations" page to get started!</strong> 👈
+    </p>
+</div>
+""", unsafe_allow_html=True)
+
+if health_data and not health_data.get('recommender_loaded'):
+    st.warning("⚠️ Recommender model not loaded. Please run:")
+    st.code("python backend/train_recommender.py", language="bash")
+
+st.divider()
+
+# ============================================================================
+# SECTION 2: FILE UPLOAD (For Personalized Analysis)
 # ============================================================================
 
 st.header("📤 Upload Your Spotify Data")
@@ -208,7 +219,7 @@ if uploaded_file is not None:
 st.divider()
 
 # ============================================================================
-# SECTION 2: MOOD ANALYSIS (Requires Upload)
+# SECTION 3: MOOD ANALYSIS (Requires Upload)
 # ============================================================================
 
 if st.session_state.get('data_uploaded', False):
@@ -240,13 +251,13 @@ if st.session_state.get('data_uploaded', False):
         st.markdown("### 🔥 Mood Insights")
         
         if top_mood == "Energetic":
-            st.write("💪 You love high-energy tracks — probably gym or hype playlists!")
+            st.write("💪 You love high-energy tracks – probably gym or hype playlists!")
         elif top_mood == "Chill":
-            st.write("🌙 You prefer calm, acoustic vibes — late night listener!")
+            st.write("🌙 You prefer calm, acoustic vibes – late night listener!")
         elif top_mood == "Happy":
-            st.write("✨ You enjoy upbeat, feel-good music — main character energy!")
+            st.write("✨ You enjoy upbeat, feel-good music – main character energy!")
         elif top_mood == "Sad":
-            st.write("🎭 You lean towards emotional tracks — deep feels!")
+            st.write("🎭 You lean towards emotional tracks – deep feels!")
         
         # Additional stats
         success_stats, stats_data = get_stats()
@@ -287,73 +298,8 @@ if st.session_state.get('data_uploaded', False):
 
 else:
     st.info("📤 Upload your Spotify CSV above to see your personalized mood analysis!")
+    st.info("🎯 Or go to the Recommendations page to discover new music without uploading!")
     st.divider()
-        # for i, rec in enumerate(recs, start=1):
-        #     st.markdown(
-        #         f"**{i}. {rec['track_name']}**  \n"
-        #         f"*{rec['artists']}* — {rec['track_genre']}"
-        #     )
-
-# ============================================================================
-# SECTION 3: MUSIC RECOMMENDATIONS (Pre-trained Model)
-# ============================================================================
-
-st.header("🎶 Discover Similar Music")
-st.markdown("Get recommendations from our vast music database (no upload needed!)")
-
-# Get available tracks
-with st.spinner("Loading available tracks..."):
-    success, track_names = get_track_names()
-
-if success:
-    st.success(f"✅ {len(track_names)} tracks available for recommendations")
-    
-    # Track selection
-    selected_track = st.selectbox(
-        "🎵 Pick a song you like:",
-        track_names,
-        index=None,
-        placeholder="Search for a track..."
-    )
-    
-    # Number of recommendations
-    top_k = st.slider("Number of recommendations", min_value=3, max_value=20, value=10)
-    
-    if selected_track:
-        st.markdown(f"### Because you liked **{selected_track}** 👇")
-        
-        with st.spinner("Finding similar tracks..."):
-            success, rec_data = get_recommendations(selected_track, top_k)
-        
-        if success:
-            recommendations = rec_data['recommendations']
-            
-            st.success(f"Found {len(recommendations)} similar tracks!")
-            
-            # Display recommendations
-            for i, rec in enumerate(recommendations, start=1):
-                with st.container():
-                    col1, col2 = st.columns([3, 1])
-                    
-                    with col1:
-                        st.markdown(f"**{i}. {rec['track_name']}**")
-                        st.markdown(f"*{rec['artists']}* • {rec['track_genre']}")
-                    
-                    with col2:
-                        if rec.get('similarity_score'):
-                            similarity_pct = rec['similarity_score'] * 100
-                            st.metric("Match", f"{similarity_pct:.1f}%")
-                    
-                    st.markdown("---")
-        
-        else:
-            st.error(f"Failed to get recommendations: {rec_data}")
-
-else:
-    st.error(f"Failed to load tracks: {track_names}")
-    if health_data and not health_data.get('recommender_loaded'):
-        st.warning("⚠️ Recommender model not loaded. Please run:")
-        st.code("python backend/train_recommender.py", language="bash")
 
 # ============================================================================
 # FOOTER
@@ -366,4 +312,3 @@ st.markdown("""
     <p>Made with ❤️ for music lovers</p>
 </div>
 """, unsafe_allow_html=True)
-

@@ -1,7 +1,6 @@
 """
-Spotify Wrapped Analysis API - FULLY DYNAMIC VERSION WITH PRE-TRAINED RECOMMENDER
-NO HARDCODED VALUES - All data comes from user uploads and requests
-Recommendations use pre-trained model for fast responses
+Spotify Wrapped Analysis API - RATING-BASED RECOMMENDATIONS
+User rates 10 random songs, gets personalized recommendations
 """
 
 from flask import Flask, request, jsonify, send_file
@@ -192,55 +191,102 @@ def classify_popularity(popularity):
 
 
 # ============================================================================
-# API ENDPOINTS - RECOMMENDATIONS (PRE-TRAINED MODEL)
+# API ENDPOINTS - RATING-BASED RECOMMENDATIONS (PRE-TRAINED MODEL)
 # ============================================================================
 
-@app.route('/get-track-names', methods=['GET'])
-def get_track_names():
-    """Get list of all available track names from pre-trained dataset"""
+@app.route('/start-rating-session', methods=['GET'])
+def start_rating_session():
+    """Get 10 random songs for user to rate"""
     global recommender
     
     if recommender is None:
         return jsonify({'error': 'Recommender model not loaded'}), 500
     
     try:
-        track_names = recommender.get_track_names()
+        # Get 10 random songs
+        random_songs = recommender.get_random_songs(n=10)
+        
+        # Format response
+        songs_to_rate = []
+        for idx, (df_idx, row) in enumerate(random_songs.iterrows()):
+            song_info = {
+                'id': idx,  # 0-9 for frontend display
+                'df_index': int(df_idx),  # Actual dataframe index for backend
+                'track_name': row.get('track_name') or row.get('name', 'Unknown'),
+                'artists': row.get('artists') or row.get('artist_name(s)', 'Unknown'),
+                'track_genre': row.get('track_genre') or row.get('genre', 'Unknown')
+            }
+            
+            # Add optional fields if available
+            if 'popularity' in row:
+                song_info['popularity'] = int(row['popularity'])
+            if 'year' in row:
+                song_info['year'] = int(row['year'])
+            
+            songs_to_rate.append(song_info)
+        
         return jsonify({
-            'track_names': track_names,
-            'total_tracks': len(track_names),
-            'source': 'Pre-trained recommendation dataset'
+            'songs': songs_to_rate,
+            'total': len(songs_to_rate),
+            'message': 'Rate each song from 1-5 stars'
         })
+    
     except Exception as e:
-        return jsonify({'error': f'Failed to get track names: {str(e)}'}), 500
+        return jsonify({'error': f'Failed to get random songs: {str(e)}'}), 500
 
 
-@app.route('/recommend-similar-tracks', methods=['POST'])
-def recommend_similar_tracks():
-    """Get recommendations based on a selected track using pre-trained model"""
+@app.route('/submit-ratings-and-recommend', methods=['POST'])
+def submit_ratings_and_recommend():
+    """Accept user ratings and return personalized recommendations"""
     global recommender
     
     if recommender is None:
-        return jsonify({'error': 'Recommender model not loaded. Please train the model first.'}), 500
+        return jsonify({'error': 'Recommender model not loaded'}), 500
     
     data = request.get_json()
     
-    if not data or 'track_name' not in data:
-        return jsonify({'error': 'track_name is required in request body'}), 400
+    if not data or 'ratings' not in data:
+        return jsonify({'error': 'ratings array is required in request body'}), 400
     
-    track_name = data['track_name']
+    ratings_data = data['ratings']
     top_k = data.get('top_k', 10)
     
+    # Validate ratings format
+    if not isinstance(ratings_data, list) or len(ratings_data) != 10:
+        return jsonify({'error': 'ratings must be an array of 10 items'}), 400
+    
     try:
-        # Get recommendations
-        recommendations = recommender.recommend_by_track_name(track_name, n_recommendations=top_k)
+        # Extract df_indices and ratings
+        df_indices = []
+        ratings = []
+        
+        for rating_item in ratings_data:
+            if 'df_index' not in rating_item or 'rating' not in rating_item:
+                return jsonify({'error': 'Each rating must have df_index and rating'}), 400
+            
+            df_indices.append(rating_item['df_index'])
+            rating_value = rating_item['rating']
+            
+            # Validate rating value
+            if not isinstance(rating_value, (int, float)) or rating_value < 1 or rating_value > 5:
+                return jsonify({'error': 'Rating must be between 1 and 5'}), 400
+            
+            ratings.append(rating_value)
+        
+        # Get recommendations using the new method
+        recommendations = recommender.recommend_from_ratings(
+            rated_indices=df_indices,
+            ratings=ratings,
+            n_recommendations=top_k
+        )
         
         if recommendations.empty:
-            return jsonify({'error': f'Track "{track_name}" not found in database'}), 404
+            return jsonify({'error': 'Could not generate recommendations'}), 500
         
         # Format response
         result = []
         for _, row in recommendations.iterrows():
-            track_info = {
+            rec_info = {
                 'track_name': row.get('track_name') or row.get('name', 'Unknown'),
                 'artists': row.get('artists') or row.get('artist_name(s)', 'Unknown'),
                 'track_genre': row.get('track_genre') or row.get('genre', 'Unknown'),
@@ -249,61 +295,21 @@ def recommend_similar_tracks():
             
             # Add optional fields if available
             if 'popularity' in row:
-                track_info['popularity'] = int(row['popularity'])
+                rec_info['popularity'] = int(row['popularity'])
             if 'year' in row:
-                track_info['year'] = int(row['year'])
+                rec_info['year'] = int(row['year'])
             
-            result.append(track_info)
+            result.append(rec_info)
         
         return jsonify({
-            'query_track': track_name,
             'recommendations': result,
             'count': len(result),
-            'source': 'Pre-trained KNN model'
+            'based_on': 'Your ratings of 10 songs',
+            'source': 'Weighted KNN model'
         })
     
     except Exception as e:
         return jsonify({'error': f'Recommendation failed: {str(e)}'}), 500
-
-
-@app.route('/get-random-songs', methods=['GET'])
-def get_random_songs():
-    """Get random songs from the pre-trained dataset"""
-    global recommender
-    
-    if recommender is None:
-        return jsonify({'error': 'Recommender model not loaded'}), 500
-    
-    n = request.args.get('n', default=10, type=int)
-    
-    if n <= 0 or n > 100:
-        return jsonify({'error': 'n must be between 1 and 100'}), 400
-    
-    try:
-        random_songs = recommender.get_random_songs(n=n)
-        
-        result = []
-        for _, row in random_songs.iterrows():
-            track_info = {
-                'track_name': row.get('track_name') or row.get('name', 'Unknown'),
-                'artists': row.get('artists') or row.get('artist_name(s)', 'Unknown'),
-                'track_genre': row.get('track_genre') or row.get('genre', 'Unknown')
-            }
-            
-            if 'popularity' in row:
-                track_info['popularity'] = int(row['popularity'])
-            if 'year' in row:
-                track_info['year'] = int(row['year'])
-            
-            result.append(track_info)
-        
-        return jsonify({
-            'random_songs': result,
-            'count': len(result)
-        })
-    
-    except Exception as e:
-        return jsonify({'error': f'Failed to get random songs: {str(e)}'}), 500
 
 
 # ============================================================================
@@ -314,15 +320,14 @@ def get_random_songs():
 def home():
     """API home page"""
     return jsonify({
-        'message': 'Spotify Wrapped Analysis API - Fully Dynamic with Pre-trained Recommender',
-        'version': '3.0',
-        'note': 'Upload your playlist for personalized analysis. Recommendations use pre-trained model.',
+        'message': 'Spotify Wrapped Analysis API - Rating-Based Recommendations',
+        'version': '4.0',
+        'note': 'Upload your playlist for personalized analysis. Rate songs for recommendations.',
         'recommender_status': 'loaded' if recommender is not None else 'not loaded',
         'endpoints': {
             'RECOMMENDATIONS (Pre-trained - No upload needed)': {
-                'GET /get-track-names': 'Get all available track names',
-                'POST /recommend-similar-tracks': 'Get similar track recommendations',
-                'GET /get-random-songs': 'Get random songs'
+                'GET /start-rating-session': 'Get 10 random songs to rate',
+                'POST /submit-ratings-and-recommend': 'Submit ratings and get recommendations'
             },
             'USER ANALYSIS (Requires CSV upload)': {
                 'POST /upload': 'Upload your Spotify CSV data',
@@ -743,7 +748,7 @@ def health_check():
         'user_data_rows': len(df) if df is not None else 0,
         'recommender_loaded': recommender is not None,
         'recommender_tracks': len(recommender.df) if recommender is not None else 0,
-        'version': '3.0-dynamic-with-pretrained'
+        'version': '4.0-rating-based'
     })
 
 
@@ -766,9 +771,9 @@ def internal_error(error):
 # ============================================================================
 
 if __name__ == '__main__':
-    print("🎵 Spotify Wrapped Analysis API v3.0")
+    print("🎵 Spotify Wrapped Analysis API v4.0")
     print("=" * 70)
-    print("✅ Pre-trained recommender for fast recommendations")
+    print("✅ Rating-based recommendations")
     print("✅ User upload for personalized analysis")
     print("=" * 70)
     print("Starting server on http://localhost:5000")

@@ -77,24 +77,34 @@ class APIClient:
         return self._make_request('GET', '/temporal-analysis')
     
     # ============================================================================
-    # RECOMMENDATION ENDPOINTS
+    # RATING-BASED RECOMMENDATION ENDPOINTS
     # ============================================================================
     
-    def get_track_names(self):
-        """Get all available track names"""
-        return self._make_request('GET', '/get-track-names')
+    def start_rating_session(self):
+        """Get 10 random songs for rating"""
+        return self._make_request('GET', '/start-rating-session')
     
-    def get_recommendations(self, track_name, top_k=10):
-        """Get similar track recommendations"""
+    def submit_ratings_and_recommend(self, ratings, top_k=10):
+        """
+        Submit user ratings and get personalized recommendations
+        
+        Parameters:
+        -----------
+        ratings : list
+            List of rating objects: [{'df_index': 123, 'rating': 4}, ...]
+        top_k : int
+            Number of recommendations to return
+        
+        Returns:
+        --------
+        dict or None
+            Recommendations data or None if failed
+        """
         data = {
-            'track_name': track_name,
+            'ratings': ratings,
             'top_k': top_k
         }
-        return self._make_request('POST', '/recommend-similar-tracks', json=data)
-    
-    def get_random_songs(self, n=10):
-        """Get random songs"""
-        return self._make_request('GET', f'/get-random-songs?n={n}')
+        return self._make_request('POST', '/submit-ratings-and-recommend', json=data)
     
     # ============================================================================
     # UTILITY

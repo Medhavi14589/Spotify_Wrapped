@@ -120,19 +120,71 @@ class SpotifyMusicRecommender:
         print(f"✅ Model loaded successfully ({len(instance.df)} tracks)")
         return instance
     
-    def get_track_names(self):
-        """Get list of all track names."""
-        if 'track_name' in self.df.columns:
-            return sorted(self.df['track_name'].unique().tolist())
-        elif 'name' in self.df.columns:
-            return sorted(self.df['name'].unique().tolist())
-        else:
-            raise ValueError("No track name column found")
-    
     def get_random_songs(self, n=10):
         """Get n random songs for rating."""
         random_indices = np.random.choice(len(self.df), size=min(n, len(self.df)), replace=False)
         return self.df.iloc[random_indices].copy()
+    
+    def recommend_from_ratings(self, rated_indices, ratings, n_recommendations=10):
+        """
+        Recommend songs based on user ratings using weighted KNN.
+        
+        Parameters:
+        -----------
+        rated_indices : list
+            List of dataframe indices for rated songs
+        ratings : list or array
+            Ratings (1-5) corresponding to each song in rated_indices
+        n_recommendations : int
+            Number of recommendations to return
+        
+        Returns:
+        --------
+        DataFrame
+            Recommended tracks with similarity scores
+        """
+        # Convert to numpy array
+        ratings = np.array(ratings)
+        
+        # Normalize ratings to use as weights (higher rating = higher weight)
+        # We give more weight to higher rated songs
+        weights = ratings / ratings.sum()
+        
+        # Get scaled features for rated songs
+        rated_features = self.scaled_features[rated_indices]
+        
+        # Calculate weighted average of rated songs' features
+        # This creates a "user profile" based on their preferences
+        weighted_profile = np.average(rated_features, axis=0, weights=weights)
+        
+        # Find similar songs using KNN
+        # We get more neighbors than needed to filter out rated songs
+        distances, indices = self.knn.kneighbors(
+            [weighted_profile], 
+            n_neighbors=min(100, len(self.df))
+        )
+        
+        # Filter out songs that were already rated
+        recommendations = []
+        recommendation_distances = []
+        
+        for idx, dist in zip(indices[0], distances[0]):
+            if idx not in rated_indices:
+                recommendations.append(idx)
+                recommendation_distances.append(dist)
+            if len(recommendations) >= n_recommendations:
+                break
+        
+        # Get recommended songs
+        recommended_songs = self.df.iloc[recommendations].copy()
+        
+        # Add similarity score (convert distance to similarity: 1 - normalized_distance)
+        max_dist = max(recommendation_distances) if recommendation_distances else 1
+        recommended_songs['similarity_score'] = [
+            1 - (dist / max_dist) for dist in recommendation_distances
+        ]
+        
+        return recommended_songs
     
     def display_song(self, song, index=None):
         """Display song information in a readable format."""
@@ -160,160 +212,69 @@ class SpotifyMusicRecommender:
         
         if 'popularity' in song:
             print(f"  Popularity: {song['popularity']}")
-    
-    def recommend_by_track_name(self, track_name, n_recommendations=10):
-        """
-        Recommend songs similar to a given track name.
-        
-        Parameters:
-        -----------
-        track_name : str
-            Name of the track
-        n_recommendations : int
-            Number of recommendations to return
-        
-        Returns:
-        --------
-        DataFrame
-            Recommended tracks
-        """
-        # Find the track (case-insensitive)
-        track_col = 'track_name' if 'track_name' in self.df.columns else 'name'
-        mask = self.df[track_col].str.lower() == track_name.lower()
-        
-        if not mask.any():
-            return pd.DataFrame()  # Track not found
-        
-        # Get the first matching track
-        track_idx = self.df[mask].index[0]
-        
-        # Get scaled features for this track
-        track_features = self.scaled_features[track_idx].reshape(1, -1)
-        
-        # Find similar songs
-        distances, indices = self.knn.kneighbors(track_features, n_neighbors=n_recommendations+1)
-        
-        # Exclude the track itself (first result)
-        recommendation_indices = indices[0][1:]
-        
-        # Get recommended songs
-        recommended_songs = self.df.iloc[recommendation_indices].copy()
-        recommended_songs['similarity_score'] = 1 - distances[0][1:]  # Convert distance to similarity
-        
-        return recommended_songs
-    
-    def get_user_ratings(self):
-        """Get user ratings for 20 random songs."""
-        print("\n" + "="*70)
-        print("MUSIC RECOMMENDATION SYSTEM")
-        print("="*70)
-        print("\nYou will be shown 10 random songs.")
-        print("Please rate each song on a scale of 1-5:")
-        print("  1 = Don't like at all")
-        print("  2 = Don't really like")
-        print("  3 = It's okay")
-        print("  4 = Like it")
-        print("  5 = Love it")
-        print("\nIf you haven't heard the song, give your best guess based on the artist/info!")
-        print("="*70)
-        
-        random_songs = self.get_random_songs(20)
-        ratings = []
-        rated_songs = []
-        
-        for idx, (_, song) in enumerate(random_songs.iterrows(), 1):
-            self.display_song(song, idx)
-            
-            while True:
-                try:
-                    rating = input("  Your rating (1-5): ").strip()
-                    rating = int(rating)
-                    if 1 <= rating <= 5:
-                        ratings.append(rating)
-                        rated_songs.append(song)
-                        break
-                    else:
-                        print("  Please enter a number between 1 and 5.")
-                except ValueError:
-                    print("  Please enter a valid number.")
-        
-        return pd.DataFrame(rated_songs), np.array(ratings)
-    
-    def recommend_songs(self, rated_songs_df, ratings, n_recommendations=10):
-        """Recommend songs based on user ratings using weighted KNN."""
-        print("\n" + "="*70)
-        print("GENERATING RECOMMENDATIONS...")
-        print("="*70)
-        
-        # Get indices of rated songs
-        rated_indices = rated_songs_df.index.tolist()
-        
-        # Normalize ratings to use as weights (higher rating = higher weight)
-        weights = ratings / ratings.sum()
-        
-        # Get scaled features for rated songs
-        rated_features = self.scaled_features[rated_indices]
-        
-        # Calculate weighted average of liked songs' features
-        weighted_profile = np.average(rated_features, axis=0, weights=weights)
-        
-        # Find similar songs using KNN
-        distances, indices = self.knn.kneighbors([weighted_profile], n_neighbors=100)
-        
-        # Filter out songs that were already rated
-        recommendations = []
-        for idx in indices[0]:
-            if idx not in rated_indices:
-                recommendations.append(idx)
-            if len(recommendations) >= n_recommendations:
-                break
-        
-        # Get recommended songs
-        recommended_songs = self.df.iloc[recommendations]
-        
-        return recommended_songs
-    
-    def display_recommendations(self, recommended_songs):
-        """Display the recommended songs."""
-        print("\n🎵 YOUR PERSONALIZED RECOMMENDATIONS 🎵\n")
-        
-        for idx, (_, song) in enumerate(recommended_songs.iterrows(), 1):
-            self.display_song(song, idx)
-        
-        print("\n" + "="*70)
-        print("Enjoy your personalized music recommendations!")
-        print("="*70)
-    
-    def run(self):
-        """Run the complete recommendation system."""
-        # Get user ratings
-        rated_songs, ratings = self.get_user_ratings()
-        
-        # Generate recommendations
-        recommendations = self.recommend_songs(rated_songs, ratings, n_recommendations=10)
-        
-        # Display recommendations
-        self.display_recommendations(recommendations)
-        
-        return recommendations
 
 
 def main():
     """Main function to run the recommender system."""
     data_path = "spotify_data.csv"
     
-    # Initialize and run the recommender
+    # Initialize the recommender
     recommender = SpotifyMusicRecommender(data_path)
-    recommendations = recommender.run()
     
-    # Optionally save recommendations to a file
-    print("\nWould you like to save your recommendations? (yes/no): ", end='')
-    save_choice = input().strip().lower()
+    print("\n" + "="*70)
+    print("MUSIC RECOMMENDATION SYSTEM - RATING BASED")
+    print("="*70)
+    print("\nYou will rate 10 random songs on a scale of 1-5:")
+    print("  1 = Don't like at all")
+    print("  2 = Don't really like")
+    print("  3 = It's okay")
+    print("  4 = Like it")
+    print("  5 = Love it")
+    print("="*70)
     
-    if save_choice in ['yes', 'y']:
-        output_path = 'recommendations.csv'
-        recommendations.to_csv(output_path, index=False)
-        print(f"\n✅ Recommendations saved to: {output_path}")
+    # Get random songs
+    random_songs = recommender.get_random_songs(10)
+    ratings = []
+    rated_indices = random_songs.index.tolist()
+    
+    # Get ratings
+    for idx, (_, song) in enumerate(random_songs.iterrows(), 1):
+        recommender.display_song(song, idx)
+        
+        while True:
+            try:
+                rating = input("  Your rating (1-5): ").strip()
+                rating = int(rating)
+                if 1 <= rating <= 5:
+                    ratings.append(rating)
+                    break
+                else:
+                    print("  Please enter a number between 1 and 5.")
+            except ValueError:
+                print("  Please enter a valid number.")
+    
+    # Generate recommendations
+    print("\n" + "="*70)
+    print("GENERATING PERSONALIZED RECOMMENDATIONS...")
+    print("="*70)
+    
+    recommendations = recommender.recommend_from_ratings(
+        rated_indices, 
+        ratings, 
+        n_recommendations=10
+    )
+    
+    # Display recommendations
+    print("\n🎵 YOUR PERSONALIZED RECOMMENDATIONS 🎵\n")
+    
+    for idx, (_, song) in enumerate(recommendations.iterrows(), 1):
+        recommender.display_song(song, idx)
+        if 'similarity_score' in song:
+            print(f"  Match Score: {song['similarity_score']:.2%}")
+    
+    print("\n" + "="*70)
+    print("Enjoy your personalized music recommendations!")
+    print("="*70)
 
 
 if __name__ == "__main__":
