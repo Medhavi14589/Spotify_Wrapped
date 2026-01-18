@@ -1,0 +1,369 @@
+import streamlit as st
+import requests
+import pandas as pd
+from frontend.frontend_config import API_BASE_URL, APP_TITLE, APP_ICON, PAGE_LAYOUT
+
+# Page configuration
+st.set_page_config(
+    page_title=APP_TITLE,
+    page_icon=APP_ICON,
+    layout=PAGE_LAYOUT
+)
+
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 3rem;
+        font-weight: bold;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .sub-header {
+        font-size: 1.2rem;
+        text-align: center;
+        color: #666;
+        margin-bottom: 2rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 0.5rem 0;
+    }
+    .success-box {
+        background-color: #d4edda;
+        border: 1px solid #c3e6cb;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def check_api_health():
+    """Check if Flask API is running"""
+    try:
+        response = requests.get(f"{API_BASE_URL}/health", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            return True, data
+        return False, None
+    except Exception as e:
+        return False, str(e)
+
+
+def upload_csv_file(uploaded_file):
+    """Upload CSV file to Flask API"""
+    try:
+        files = {'file': uploaded_file}
+        response = requests.post(f"{API_BASE_URL}/upload", files=files, timeout=30)
+        
+        if response.status_code == 200:
+            return True, response.json()
+        else:
+            return False, response.json().get('error', 'Unknown error')
+    except Exception as e:
+        return False, str(e)
+
+
+def get_mood_distribution():
+    """Get mood distribution from API"""
+    try:
+        response = requests.get(f"{API_BASE_URL}/mood-distribution", timeout=10)
+        if response.status_code == 200:
+            return True, response.json()
+        return False, response.json().get('error', 'Unknown error')
+    except Exception as e:
+        return False, str(e)
+
+
+def get_stats():
+    """Get user stats from API"""
+    try:
+        response = requests.get(f"{API_BASE_URL}/stats", timeout=10)
+        if response.status_code == 200:
+            return True, response.json()
+        return False, response.json().get('error', 'Unknown error')
+    except Exception as e:
+        return False, str(e)
+
+
+def get_track_names():
+    """Get available track names from pre-trained model"""
+    try:
+        response = requests.get(f"{API_BASE_URL}/get-track-names", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return True, data['track_names']
+        return False, response.json().get('error', 'Unknown error')
+    except Exception as e:
+        return False, str(e)
+
+
+def get_recommendations(track_name, top_k=5):
+    """Get recommendations from API"""
+    try:
+        payload = {'track_name': track_name, 'top_k': top_k}
+        response = requests.post(
+            f"{API_BASE_URL}/recommend-similar-tracks",
+            json=payload,
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            return True, response.json()
+        return False, response.json().get('error', 'Unknown error')
+    except Exception as e:
+        return False, str(e)
+
+
+def get_top_artists(n=10):
+    """Get top artists from API"""
+    try:
+        response = requests.get(f"{API_BASE_URL}/top-artists?n={n}", timeout=10)
+        if response.status_code == 200:
+            return True, response.json()
+        return False, response.json().get('error', 'Unknown error')
+    except Exception as e:
+        return False, str(e)
+
+
+# ============================================================================
+# MAIN APP
+# ============================================================================
+
+# Title
+st.markdown('<div class="main-header">🎵 Spotify Wrapped 🎵</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Your personal music insights, powered by ML</div>', unsafe_allow_html=True)
+
+# Check API health
+api_healthy, health_data = check_api_health()
+
+if not api_healthy:
+    st.error("⚠️ Cannot connect to Flask API!")
+    st.error(f"Error: {health_data}")
+    st.info("Please make sure the Flask API is running on http://localhost:5000")
+    st.code("python backend/spotify_api_dynamic.py", language="bash")
+    st.stop()
+
+# Display API status
+with st.expander("ℹ️ API Status", expanded=False):
+    if health_data:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("API Status", "✅ Connected")
+            st.metric("Recommender Status", 
+                     "✅ Loaded" if health_data.get('recommender_loaded') else "❌ Not Loaded")
+        with col2:
+            st.metric("User Data", 
+                     f"{health_data.get('user_data_rows', 0)} tracks" if health_data.get('user_data_loaded') else "Not uploaded")
+            st.metric("Recommendation Database", 
+                     f"{health_data.get('recommender_tracks', 0)} tracks")
+
+st.divider()
+
+# ============================================================================
+# SECTION 1: FILE UPLOAD (For Personalized Analysis)
+# ============================================================================
+
+st.header("📤 Upload Your Spotify Data")
+st.markdown("Upload your Spotify playlist CSV to get personalized mood and listening analysis")
+
+uploaded_file = st.file_uploader(
+    "Choose your Spotify CSV file",
+    type=['csv'],
+    help="Export your Spotify playlist as CSV and upload it here"
+)
+
+if uploaded_file is not None:
+    with st.spinner("Uploading and analyzing your data..."):
+        success, result = upload_csv_file(uploaded_file)
+    
+    if success:
+        st.success(f"✅ Successfully uploaded {result['rows']} tracks!")
+        
+        # Store upload status in session state
+        st.session_state['data_uploaded'] = True
+        st.session_state['upload_info'] = result
+        
+        with st.expander("📊 Upload Summary", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Tracks", result['rows'])
+            with col2:
+                if result['preview'].get('total_duration_ms'):
+                    hours = result['preview']['total_duration_ms'] / (1000 * 60 * 60)
+                    st.metric("Total Hours", f"{hours:.1f}")
+            with col3:
+                st.metric("Columns", len(result['columns']))
+    else:
+        st.error(f"❌ Upload failed: {result}")
+
+st.divider()
+
+# ============================================================================
+# SECTION 2: MOOD ANALYSIS (Requires Upload)
+# ============================================================================
+
+if st.session_state.get('data_uploaded', False):
+    st.header("🎧 Your Listening Mood Analysis")
+    
+    with st.spinner("Analyzing your mood distribution..."):
+        success, mood_data = get_mood_distribution()
+    
+    if success:
+        mood_dist = mood_data['mood_distribution']
+        
+        # Get top mood
+        top_mood = max(mood_dist.items(), key=lambda x: x[1]['count'])[0]
+        
+        st.subheader("🎵 Your Top Mood")
+        st.success(f"Your most common vibe is... **{top_mood}** 🎉")
+        
+        # Create mood chart
+        st.subheader("📊 Mood Distribution")
+        
+        mood_df = pd.DataFrame([
+            {'Mood': mood, 'Percentage': data['percentage']}
+            for mood, data in mood_dist.items()
+        ])
+        
+        st.bar_chart(mood_df.set_index('Mood'))
+        
+        # Mood insights
+        st.markdown("### 🔥 Mood Insights")
+        
+        if top_mood == "Energetic":
+            st.write("💪 You love high-energy tracks — probably gym or hype playlists!")
+        elif top_mood == "Chill":
+            st.write("🌙 You prefer calm, acoustic vibes — late night listener!")
+        elif top_mood == "Happy":
+            st.write("✨ You enjoy upbeat, feel-good music — main character energy!")
+        elif top_mood == "Sad":
+            st.write("🎭 You lean towards emotional tracks — deep feels!")
+        
+        # Additional stats
+        success_stats, stats_data = get_stats()
+        if success_stats:
+            st.subheader("📈 Your Listening Stats")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Total Tracks", stats_data['total_tracks'])
+                if 'unique_artists' in stats_data:
+                    st.metric("Unique Artists", stats_data['unique_artists'])
+            
+            with col2:
+                if 'total_duration' in stats_data:
+                    st.metric("Total Hours", stats_data['total_duration']['hours'])
+                if 'popularity' in stats_data:
+                    st.metric("Avg Popularity", stats_data['popularity']['average'])
+            
+            with col3:
+                if 'explicit' in stats_data:
+                    st.metric("Explicit Content", f"{stats_data['explicit']['percentage']}%")
+        
+        # Top Artists
+        success_artists, artists_data = get_top_artists(10)
+        if success_artists:
+            st.subheader("🎤 Your Top 10 Artists")
+            
+            artists_df = pd.DataFrame(artists_data['top_artists'])
+            
+            for _, artist in artists_df.iterrows():
+                st.markdown(f"**{artist['rank']}. {artist['artist']}** - {artist['track_count']} tracks ({artist['percentage']}%)")
+    
+    else:
+        st.error(f"Failed to get mood data: {mood_data}")
+    
+    st.divider()
+
+else:
+    st.info("📤 Upload your Spotify CSV above to see your personalized mood analysis!")
+    st.divider()
+        # for i, rec in enumerate(recs, start=1):
+        #     st.markdown(
+        #         f"**{i}. {rec['track_name']}**  \n"
+        #         f"*{rec['artists']}* — {rec['track_genre']}"
+        #     )
+
+# ============================================================================
+# SECTION 3: MUSIC RECOMMENDATIONS (Pre-trained Model)
+# ============================================================================
+
+st.header("🎶 Discover Similar Music")
+st.markdown("Get recommendations from our vast music database (no upload needed!)")
+
+# Get available tracks
+with st.spinner("Loading available tracks..."):
+    success, track_names = get_track_names()
+
+if success:
+    st.success(f"✅ {len(track_names)} tracks available for recommendations")
+    
+    # Track selection
+    selected_track = st.selectbox(
+        "🎵 Pick a song you like:",
+        track_names,
+        index=None,
+        placeholder="Search for a track..."
+    )
+    
+    # Number of recommendations
+    top_k = st.slider("Number of recommendations", min_value=3, max_value=20, value=10)
+    
+    if selected_track:
+        st.markdown(f"### Because you liked **{selected_track}** 👇")
+        
+        with st.spinner("Finding similar tracks..."):
+            success, rec_data = get_recommendations(selected_track, top_k)
+        
+        if success:
+            recommendations = rec_data['recommendations']
+            
+            st.success(f"Found {len(recommendations)} similar tracks!")
+            
+            # Display recommendations
+            for i, rec in enumerate(recommendations, start=1):
+                with st.container():
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        st.markdown(f"**{i}. {rec['track_name']}**")
+                        st.markdown(f"*{rec['artists']}* • {rec['track_genre']}")
+                    
+                    with col2:
+                        if rec.get('similarity_score'):
+                            similarity_pct = rec['similarity_score'] * 100
+                            st.metric("Match", f"{similarity_pct:.1f}%")
+                    
+                    st.markdown("---")
+        
+        else:
+            st.error(f"Failed to get recommendations: {rec_data}")
+
+else:
+    st.error(f"Failed to load tracks: {track_names}")
+    if health_data and not health_data.get('recommender_loaded'):
+        st.warning("⚠️ Recommender model not loaded. Please run:")
+        st.code("python backend/train_recommender.py", language="bash")
+
+# ============================================================================
+# FOOTER
+# ============================================================================
+
+st.divider()
+st.markdown("""
+<div style='text-align: center; color: #666; padding: 2rem;'>
+    <p>🎵 Powered by Flask API + Streamlit + Machine Learning 🎵</p>
+    <p>Made with ❤️ for music lovers</p>
+</div>
+""", unsafe_allow_html=True)
+
